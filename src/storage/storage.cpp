@@ -65,11 +65,14 @@ bool StorageEngine::rowMatchesWhere(const Row &row, const Schema &schema,
 }
 
 /* ── CREATE TABLE ───────────────────────────────────────── */
-bool StorageEngine::createTable(const Schema &schemaIn, std::string &err) {
+bool StorageEngine::createTable(const Schema &schemaIn, bool ifNotExists, std::string &err) {
     std::lock_guard<std::mutex> lk(globalMu_);
 
     std::string tname = toUpper(schemaIn.tableName);
     if (tables_.count(tname)) {
+        if (ifNotExists) {
+            return true;
+        }
         err = "Table already exists: " + tname;
         return false;
     }
@@ -89,7 +92,16 @@ bool StorageEngine::createTable(const Schema &schemaIn, std::string &err) {
 
     return true;
 }
+bool StorageEngine::deleteRows(const std::string &tableName, std::string &err) {
+    std::string tname = toUpper(tableName);
+    Table *t = getTable(tname);
+    if (!t) { err = "No such table: " + tname; return false; }
 
+    std::lock_guard<std::mutex> lk(t->mu);
+    t->rows.clear();
+    if (t->index) t->index->clear();
+    return true;
+}
 /* ── INSERT ─────────────────────────────────────────────── */
 bool StorageEngine::insertRow(const std::string &tableName,
                                const std::vector<Value> &vals,

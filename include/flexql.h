@@ -5,6 +5,7 @@
 #define FLEXQL_ERROR 1
 
 typedef struct flexql_db flexql_db;
+typedef flexql_db FlexQL;
 
 typedef int (*flexql_callback)(
     void* data,

@@ -11,21 +11,6 @@ using namespace std::chrono;
 static const long long DEFAULT_INSERT_ROWS = 1000000LL;
 static const int INSERT_BATCH_SIZE = 5000;
 
-struct QueryStats {
-    long long rows = 0;
-};
-
-static int count_rows_callback(void *data, int argc, char **argv, char **azColName) {
-    (void)argc;
-    (void)argv;
-    (void)azColName;
-    QueryStats *stats = static_cast<QueryStats*>(data);
-    if (stats) {
-        stats->rows++;
-    }
-    return 0;
-}
-
 static bool run_exec(FlexQL *db, const string &sql, const string &label) {
     char *errMsg = nullptr;
     auto start = high_resolution_clock::now();
@@ -42,26 +27,6 @@ static bool run_exec(FlexQL *db, const string &sql, const string &label) {
     }
 
     cout << "[PASS] " << label << " (" << elapsed << " ms)\n";
-    return true;
-}
-
-static bool run_query(FlexQL *db, const string &sql, const string &label) {
-    QueryStats stats;
-    char *errMsg = nullptr;
-    auto start = high_resolution_clock::now();
-    int rc = flexql_exec(db, sql.c_str(), count_rows_callback, &stats, &errMsg);
-    auto end = high_resolution_clock::now();
-    long long elapsed = duration_cast<milliseconds>(end - start).count();
-
-    if (rc != FLEXQL_OK) {
-        cout << "[FAIL] " << label << " -> " << (errMsg ? errMsg : "unknown error") << "\n";
-        if (errMsg) {
-            flexql_free(errMsg);
-        }
-        return false;
-    }
-
-    cout << "[PASS] " << label << " | rows=" << stats.rows << " | " << elapsed << " ms\n";
     return true;
 }
 
@@ -157,19 +122,13 @@ static bool run_data_level_unit_tests(FlexQL *db) {
 
     record(run_exec(
             db,
-            "CREATE TABLE IF NOT EXISTS TEST_USERS(ID DECIMAL, NAME VARCHAR(64), BALANCE DECIMAL, EXPIRES_AT DECIMAL);",
+            "CREATE TABLE TEST_USERS(ID DECIMAL, NAME VARCHAR(64), BALANCE DECIMAL, EXPIRES_AT DECIMAL);",
             "CREATE TABLE TEST_USERS"));
 
-    record(run_exec(db, "DELETE FROM TEST_USERS;", "RESET TEST_USERS"));
-
-    record(run_exec(
-            db,
-            "INSERT INTO TEST_USERS VALUES "
-            "(1, 'Alice', 1200, 1893456000),"
-            "(2, 'Bob', 450, 1893456000),"
-            "(3, 'Carol', 2200, 1893456000),"
-            "(4, 'Dave', 800, 1893456000);",
-            "INSERT TEST_USERS"));
+    record(run_exec(db, "INSERT INTO TEST_USERS VALUES (1, 'Alice', 1200, 1893456000);", "INSERT Alice"));
+    record(run_exec(db, "INSERT INTO TEST_USERS VALUES (2, 'Bob', 450, 1893456000);", "INSERT Bob"));
+    record(run_exec(db, "INSERT INTO TEST_USERS VALUES (3, 'Carol', 2200, 1893456000);", "INSERT Carol"));
+    record(run_exec(db, "INSERT INTO TEST_USERS VALUES (4, 'Dave', 800, 1893456000);", "INSERT Dave"));
 
     vector<string> rows;
 
@@ -199,18 +158,12 @@ static bool run_data_level_unit_tests(FlexQL *db) {
 
     record(run_exec(
             db,
-            "CREATE TABLE IF NOT EXISTS TEST_ORDERS(ORDER_ID DECIMAL, USER_ID DECIMAL, AMOUNT DECIMAL, EXPIRES_AT DECIMAL);",
+            "CREATE TABLE TEST_ORDERS(ORDER_ID DECIMAL, USER_ID DECIMAL, AMOUNT DECIMAL, EXPIRES_AT DECIMAL);",
             "CREATE TABLE TEST_ORDERS"));
 
-    record(run_exec(db, "DELETE FROM TEST_ORDERS;", "RESET TEST_ORDERS"));
-
-    record(run_exec(
-            db,
-            "INSERT INTO TEST_ORDERS VALUES "
-            "(101, 1, 50, 1893456000),"
-            "(102, 1, 150, 1893456000),"
-            "(103, 3, 500, 1893456000);",
-            "INSERT TEST_ORDERS"));
+    record(run_exec(db, "INSERT INTO TEST_ORDERS VALUES (101, 1, 50, 1893456000);", "INSERT Order 101"));
+    record(run_exec(db, "INSERT INTO TEST_ORDERS VALUES (102, 1, 150, 1893456000);", "INSERT Order 102"));
+    record(run_exec(db, "INSERT INTO TEST_ORDERS VALUES (103, 3, 500, 1893456000);", "INSERT Order 103"));
 
     bool q5 = query_rows(
             db,

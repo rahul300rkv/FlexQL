@@ -6,6 +6,61 @@
 #include <vector>
 #include <sstream>
 #include <cstring>
+#include "../include/storage.hpp"
+#include "../include/parser.hpp"
+
+/* ── Global Storage Engine ─────────────────────────────── */
+static StorageEngine storage;
+
+/* ── PROCESS QUERY ─────────────────────────────────────── */
+bool process_query(const std::string& query, ResultSet& result, std::string& err) {
+    ParsedQuery pq = Parser::parse(query);
+    if (pq.type == QueryType::UNKNOWN) {
+        err = pq.errorMsg;
+        return false;
+    }
+
+    switch (pq.type) {
+        case QueryType::CREATE_TABLE: {
+            Schema schema;
+            schema.tableName = pq.tableName;
+            schema.columns = pq.colDefs;
+            for (int i = 0; i < (int)pq.colDefs.size(); ++i) {
+                if (pq.colDefs[i].primaryKey) {
+                    schema.pkIndex = i;
+                    break;
+                }
+            }
+            return storage.createTable(schema, pq.ifNotExists, err);
+        }
+        case QueryType::DELETE: {
+            return storage.deleteRows(pq.tableName, err);
+        }
+        case QueryType::INSERT: {
+            std::vector<Value> vals;
+            for (const auto& s : pq.insertValues) {
+                if (s == "NULL") vals.push_back(std::monostate{});
+                else vals.push_back(s); // string, will be converted
+            }
+            return storage.insertRow(pq.tableName, vals, pq.expiresAt, err);
+        }
+        case QueryType::SELECT: {
+            if (pq.hasJoin) {
+                return storage.selectJoin(pq.tableName, pq.joinTable, pq.joinColA, pq.joinColB,
+                                        pq.selectCols, pq.selectAll,
+                                        pq.where.column, pq.where.op, pq.where.value, pq.where.present,
+                                        result, err);
+            } else {
+                return storage.selectRows(pq.tableName, pq.selectCols, pq.selectAll,
+                                        pq.where.column, pq.where.op, pq.where.value, pq.where.present,
+                                        result, err);
+            }
+        }
+        default:
+            err = "Unsupported query type";
+            return false;
+    }
+}
 
 /*
     You must implement this function elsewhere.
@@ -14,10 +69,6 @@
     - Execute using StorageEngine
     - Fill ResultSet
 */
-struct ResultSet {
-    std::vector<std::string> columns;
-    std::vector<std::vector<std::string>> rows;
-};
 
 extern bool process_query(const std::string& query,
                           ResultSet& result,
@@ -36,9 +87,9 @@ void send_result(int client_sock, const ResultSet& result) {
 
     // Rows
     for (const auto& row : result.rows) {
-        for (size_t i = 0; i < row.size(); i++) {
-            out << row[i];
-            if (i != row.size() - 1) out << "|";
+        for (size_t i = 0; i < row.cells.size(); i++) {
+            out << valueToString(row.cells[i]);
+            if (i != row.cells.size() - 1) out << "|";
         }
         out << "\n";
     }

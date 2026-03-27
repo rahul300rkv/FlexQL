@@ -8,6 +8,9 @@
 #include <mutex>
 #include <memory>
 
+/* ── Type aliases ────────────────────────────────────────── */
+using QueryCache = Cache<ResultSet>;
+
 /* ── Table: schema + row-major storage + primary index ───── */
 struct Table {
     Schema                        schema;
@@ -28,7 +31,7 @@ public:
     StorageEngine();
 
     /* ── DDL ─────────────────────────────────────────────── */
-    bool createTable(const Schema &schema, std::string &err);
+    bool createTable(const Schema &schema, bool ifNotExists, std::string &err);
 
     /* ── DML ─────────────────────────────────────────────── */
     bool insertRow(const std::string &tableName,
@@ -60,6 +63,8 @@ public:
                     bool wherePresent,
                     ResultSet &out,
                     std::string &err);
+
+    bool deleteRows(const std::string &tableName, std::string &err);
 
     /* ── Access ─────────────────────────────────────────── */
     Table* getTable(const std::string &name);

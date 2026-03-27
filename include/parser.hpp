@@ -9,6 +9,7 @@ enum class QueryType {
     CREATE_TABLE,
     INSERT,
     SELECT,
+    DELETE,
     UNKNOWN
 };
 
@@ -43,6 +44,7 @@ struct ParsedQuery {
     std::string joinColA;
     std::string joinColB;
 
+    bool ifNotExists = false;
     std::string errorMsg;
 };
 

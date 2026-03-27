@@ -100,6 +100,15 @@ int flexql_exec(
 
     if (lines.empty()) return FLEXQL_OK;
 
+    // Check for error response
+    if (lines[0].find("ERROR|") == 0) {
+        std::string errText = lines[0].substr(6);  // Skip "ERROR|"
+        if (errmsg) {
+            *errmsg = strdup(errText.c_str());
+        }
+        return FLEXQL_ERROR;
+    }
+
     // First line = columns
     std::vector<std::string> columns;
     {

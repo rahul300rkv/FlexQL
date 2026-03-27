@@ -78,11 +78,22 @@ ParsedQuery Parser::parse(const std::string &rawSql) {
         if (tokens.size() < 3 || toUpper(tokens[1]) != "TABLE") {
             q.errorMsg = "Expected CREATE TABLE"; return q;
         }
-        q.type      = QueryType::CREATE_TABLE;
-        q.tableName = toUpper(tokens[2]);
+        q.type = QueryType::CREATE_TABLE;
+
+        size_t pos = 2;
+        if (pos + 2 < tokens.size() && toUpper(tokens[pos]) == "IF" &&
+            toUpper(tokens[pos+1]) == "NOT" && toUpper(tokens[pos+2]) == "EXISTS") {
+            q.ifNotExists = true;
+            pos += 3;
+        }
+
+        if (pos >= tokens.size()) {
+            q.errorMsg = "Expected table name"; return q;
+        }
+
+        q.tableName = toUpper(tokens[pos++]);
 
         // find '(' ... ')'
-        size_t pos = 3;
         if (pos >= tokens.size() || tokens[pos] != "(") {
             q.errorMsg = "Expected '(' after table name"; return q;
         }
@@ -204,6 +215,16 @@ ParsedQuery Parser::parse(const std::string &rawSql) {
             q.where.column = toUpper(q.where.column);
         }
 
+        return q;
+    }
+
+    /* ── DELETE ───────────────────────────────────────────── */
+    if (first == "DELETE") {
+        q.type = QueryType::DELETE;
+        if (tokens.size() < 3 || toUpper(tokens[1]) != "FROM") {
+            q.errorMsg = "Expected DELETE FROM"; return q;
+        }
+        q.tableName = toUpper(tokens[2]);
         return q;
     }
 
