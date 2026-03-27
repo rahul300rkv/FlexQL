@@ -9,6 +9,7 @@
 #include <string>
 #include <vector>
 #include <sstream>
+#include <iostream>  // Add for debug
 
 /* Internal handle */
 struct FlexQL {
@@ -52,77 +53,126 @@ int flexql_close(FlexQL *db) {
 }
 
 /* ── flexql_exec ─────────────────────────────────────────── */
-int flexql_exec(FlexQL     *db,
+int flexql_exec(FlexQL *db,
                 const char *sql,
                 int (*callback)(void *, int, char **, char **),
-                void       *arg,
-                char      **errmsg) {
+                void *arg,
+                char **errmsg) {
 
-    if (!db || db->sock < 0 || !sql) return FLEXQL_ERROR;
+    if (!db || db->sock < 0 || !sql) {
+        if (errmsg) *errmsg = strdup("Invalid database handle");
+        return FLEXQL_ERROR;
+    }
 
-    std::string query = std::string(sql);
-    if (query.back() != ';') query += ";";
+    std::string query = sql;
+    if (!query.empty() && query.back() != ';') query += ";";
 
-    if (send(db->sock, query.c_str(), query.length(), 0) <= 0) return FLEXQL_ERROR;
+    // Send query to server
+    if (send(db->sock, query.c_str(), query.length(), 0) <= 0) {
+        if (errmsg) *errmsg = strdup("Failed to send query to server");
+        return FLEXQL_ERROR;
+    }
 
-    std::string pending;
+    // Read the first line to check for error
+    std::string firstLine;
+    char c;
+    while (read(db->sock, &c, 1) > 0) {
+        if (c == '\n') break;
+        firstLine += c;
+    }
+    
+    std::cerr << "API: First line: [" << firstLine << "]" << std::endl;
+    
+    // If first line starts with ERROR|, return error
+    if (firstLine.find("ERROR|") == 0) {
+        std::cerr << "API: DETECTED ERROR!" << std::endl;
+        
+        // Extract error message
+        if (errmsg) {
+            std::string errorMsg = firstLine.substr(6);
+            *errmsg = strdup(errorMsg.c_str());
+            std::cerr << "API: Error message: " << errorMsg << std::endl;
+        }
+        
+        // Read the rest of the response until END to clear the socket buffer
+        std::string rest;
+        char buf[1024];
+        while (true) {
+            ssize_t n = read(db->sock, buf, sizeof(buf) - 1);
+            if (n <= 0) break;
+            buf[n] = '\0';
+            rest += buf;
+            if (rest.find("END") != std::string::npos) break;
+        }
+        
+        std::cerr << "API: Returning FLEXQL_ERROR (1)" << std::endl;
+        return FLEXQL_ERROR;
+    }
+    
+    std::cerr << "API: No error detected, processing normal response" << std::endl;
+    
+    // If no error, continue reading the full response
+    std::string fullResponse = firstLine + "\n";
     char buf[8192];
-    bool done = false;
-    bool hasError = false;
-    std::string errorText;
-
-    while (!done) {
+    while (true) {
         ssize_t n = read(db->sock, buf, sizeof(buf) - 1);
         if (n <= 0) break;
         buf[n] = '\0';
-        pending.append(buf, n);
-
-        size_t nlpos;
-        while ((nlpos = pending.find('\n')) != std::string::npos) {
-            std::string line = pending.substr(0, nlpos);
-            pending.erase(0, nlpos + 1);
-
-            if (!line.empty() && line.back() == '\r') line.pop_back();
-
-            if (line == "END") {
-                done = true;
-                break;
+        fullResponse += buf;
+        if (fullResponse.find("\nEND\n") != std::string::npos) break;
+    }
+    
+    // Parse the successful response
+    std::vector<std::string> lines;
+    std::stringstream ss(fullResponse);
+    std::string line;
+    while (std::getline(ss, line)) {
+        if (line == "END") break;
+        lines.push_back(line);
+    }
+    
+    if (lines.empty()) {
+        return FLEXQL_OK;
+    }
+    
+    // Parse column headers (first line)
+    std::vector<std::string> headers;
+    std::stringstream headerStream(lines[0]);
+    std::string header;
+    while (headerStream >> header) {
+        headers.push_back(header);
+    }
+    
+    // Parse data rows (remaining lines)
+    std::vector<std::vector<std::string>> rows;
+    for (size_t i = 1; i < lines.size(); i++) {
+        std::vector<std::string> row;
+        std::stringstream rowStream(lines[i]);
+        std::string value;
+        while (rowStream >> value) {
+            row.push_back(value);
+        }
+        rows.push_back(row);
+    }
+    
+    // Call callback for each row if provided
+    if (callback) {
+        for (const auto& row : rows) {
+            std::vector<char*> argv;
+            for (const auto& val : row) {
+                argv.push_back(const_cast<char*>(val.c_str()));
             }
-
-            if (line.rfind("ERROR|", 0) == 0) {
-                hasError = true;
-                errorText = line.substr(6);
-                size_t first = errorText.find_first_not_of(' ');
-                if (first != std::string::npos) errorText = errorText.substr(first);
-                continue;
+            
+            std::vector<char*> colNames;
+            for (const auto& h : headers) {
+                colNames.push_back(const_cast<char*>(h.c_str()));
             }
-
-            /* Split row data by spaces or '|' */
-            if (callback && !line.empty()) {
-                std::vector<std::string> columns;
-                std::stringstream ss(line);
-                std::string token;
-
-                while (std::getline(ss, token, ' ')) {
-                    if (!token.empty()) columns.push_back(token);
-                }
-
-                std::vector<char*> argv;
-                for (auto &c : columns) argv.push_back((char*)c.c_str());
-
-                if (callback(arg, (int)argv.size(), argv.data(), nullptr) != 0) {
-                    done = true;
-                    break;
-                }
-            }
+            
+            callback(arg, (int)argv.size(), argv.data(), colNames.data());
         }
     }
-
-    if (hasError && errmsg) {
-        *errmsg = strdup(errorText.c_str());
-    }
-
-    return hasError ? FLEXQL_ERROR : (done ? FLEXQL_OK : FLEXQL_ERROR);
+    
+    return FLEXQL_OK;
 }
 
 /* ── flexql_free ─────────────────────────────────────────── */

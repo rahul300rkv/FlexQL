@@ -3,6 +3,7 @@
 #include <sstream>
 #include <cctype>
 #include <stdexcept>
+#include <iostream>
 
 /* ── helpers ─────────────────────────────────────────────── */
 std::string Parser::toUpper(std::string s) {
@@ -51,8 +52,8 @@ WhereClause Parser::parseWhere(const std::vector<std::string> &tokens, size_t &p
     if (pos >= tokens.size()) return w;
     if (toUpper(tokens[pos]) != "WHERE") return w;
     ++pos;
-    if (pos + 2 >= tokens.size()) return w;
-    w.column  = tokens[pos++];
+    if (pos + 2 >= tokens.size()) return w; // must have col, op, val
+    w.column  = toUpper(tokens[pos++]);
     w.op      = tokens[pos++];
     w.value   = tokens[pos++];
     w.present = true;
@@ -198,9 +199,20 @@ ParsedQuery Parser::parse(const std::string &rawSql) {
             if (dot != std::string::npos) q.where.column = q.where.column.substr(dot+1);
         }
 
-        // ORDER BY is **removed** completely
-        // q.orderByCol = "";
-        // q.orderByDesc = false
+        // ORDER BY
+        if (pos + 1 < tokens.size() && toUpper(tokens[pos]) == "ORDER" &&
+            toUpper(tokens[pos+1]) == "BY") {
+            pos += 2;
+            if (pos < tokens.size()) {
+                q.orderByCol = toUpper(tokens[pos++]);
+                if (pos < tokens.size()) {
+                    std::string next = toUpper(tokens[pos]);
+                    if (next == "ASC") { q.orderByDesc = false; ++pos; }
+                    else if (next == "DESC") { q.orderByDesc = true; ++pos; }
+                }
+            }
+            std::cerr << "PARSER: ORDER BY " << q.orderByCol << " DESC=" << q.orderByDesc << std::endl;
+        }
 
         return q;
     }

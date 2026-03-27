@@ -3,6 +3,7 @@
 #include <stdexcept>
 #include <ctime>
 #include <cmath>
+#include <sstream>
 
 /* ── Helpers ─────────────────────────────────────────────── */
 static std::string toUpper(std::string s) {
@@ -27,7 +28,6 @@ void StorageEngine::purgeExpiredRows(Table &t) {
         [now](const Row &r){ return r.expires < now; }),
         rows.end());
 
-    // Rebuild primary index
     if (t.index && t.schema.pkIndex >= 0) {
         t.index->clear();
         for (size_t i = 0; i < rows.size(); ++i) {
@@ -70,9 +70,7 @@ bool StorageEngine::createTable(const Schema &schemaIn, bool ifNotExists, std::s
 
     std::string tname = toUpper(schemaIn.tableName);
     if (tables_.count(tname)) {
-        if (ifNotExists) {
-            return true;
-        }
+        if (ifNotExists) return true;
         err = "Table already exists: " + tname;
         return false;
     }
@@ -89,9 +87,10 @@ bool StorageEngine::createTable(const Schema &schemaIn, bool ifNotExists, std::s
 
     t->index = std::make_unique<PrimaryIndex>();
     tables_[tname] = std::move(t);
-
     return true;
 }
+
+/* ── DELETE ROWS ────────────────────────────────────────── */
 bool StorageEngine::deleteRows(const std::string &tableName, std::string &err) {
     std::string tname = toUpper(tableName);
     Table *t = getTable(tname);
@@ -102,6 +101,7 @@ bool StorageEngine::deleteRows(const std::string &tableName, std::string &err) {
     if (t->index) t->index->clear();
     return true;
 }
+
 /* ── INSERT ─────────────────────────────────────────────── */
 bool StorageEngine::insertRow(const std::string &tableName,
                                const std::vector<Value> &vals,
@@ -129,12 +129,7 @@ bool StorageEngine::insertRow(const std::string &tableName,
 
     Row row;
     row.cells = vals;
-
-    // 🔴 Ensure expiry always exists (mandatory)
-    if (expiresAt == 0)
-        row.expires = std::time(nullptr) + 3600;
-    else
-        row.expires = expiresAt;
+    row.expires = (expiresAt == 0) ? std::time(nullptr) + 3600 : expiresAt;
 
     t->rows.push_back(row);
     size_t idx = t->rows.size() - 1;
@@ -142,7 +137,6 @@ bool StorageEngine::insertRow(const std::string &tableName,
     if (t->schema.pkIndex >= 0)
         t->index->insert(valueToString(vals[t->schema.pkIndex]), idx);
 
-    // ❌ Cache intentionally NOT used
     return true;
 }
 
@@ -162,20 +156,16 @@ bool StorageEngine::selectRows(const std::string &tableName,
 
     std::string tname = toUpper(tableName);
     Table *t = getTable(tname);
-
     if (!t) { err = "No such table: " + tname; return false; }
 
     std::lock_guard<std::mutex> lk(t->mu);
     purgeExpiredRows(*t);
 
-    // WHERE safety
     if (wherePresent && (whereCol.empty() || whereOp.empty())) {
-        err = "Invalid WHERE clause";
-        return false;
+        err = "Invalid WHERE clause"; return false;
     }
 
     std::vector<int> colIdxs;
-
     if (selectAll) {
         for (int i = 0; i < (int)t->schema.columns.size(); ++i) {
             out.columns.push_back(t->schema.columns[i].name);
@@ -200,15 +190,11 @@ bool StorageEngine::selectRows(const std::string &tableName,
 
         auto idxResults = t->index->lookup(whereVal);
         usedIndex = true;
-
         for (size_t ri : idxResults) {
             if (ri >= t->rows.size()) continue;
             const Row &row = t->rows[ri];
-
             Row outRow;
-            for (int ci : colIdxs)
-                outRow.cells.push_back(row.cells[ci]);
-
+            for (int ci : colIdxs) outRow.cells.push_back(row.cells[ci]);
             out.rows.push_back(outRow);
         }
     }
@@ -218,11 +204,8 @@ bool StorageEngine::selectRows(const std::string &tableName,
             if (wherePresent &&
                 !rowMatchesWhere(row, t->schema, toUpper(whereCol), whereOp, whereVal))
                 continue;
-
             Row outRow;
-            for (int ci : colIdxs)
-                outRow.cells.push_back(row.cells[ci]);
-
+            for (int ci : colIdxs) outRow.cells.push_back(row.cells[ci]);
             out.rows.push_back(outRow);
         }
     }
@@ -262,108 +245,76 @@ bool StorageEngine::selectJoin(const std::string &tableA,
     purgeExpiredRows(*tA);
     purgeExpiredRows(*tB);
 
-    // Build the combined schema: tableA cols then tableB cols
-    // Each column is addressed as "TABLE.COL" or just "COL"
     int nA = (int)tA->schema.columns.size();
     int nB = (int)tB->schema.columns.size();
 
-    // Resolve which combined columns to output
-    // colIdxs[i] = index in the combined row (0..nA-1 = tableA, nA..nA+nB-1 = tableB)
     std::vector<int> colIdxs;
     std::vector<std::string> outColNames;
 
     auto resolveCol = [&](const std::string &rawCol) -> int {
-        // Try qualified TABLE.COL match first
         auto dot = rawCol.find('.');
         if (dot != std::string::npos) {
             std::string tbl = rawCol.substr(0, dot);
             std::string col = rawCol.substr(dot + 1);
-            if (tbl == tnA) {
-                int ci = tA->schema.colIndex(col);
-                if (ci >= 0) return ci;
-            } else if (tbl == tnB) {
-                int ci = tB->schema.colIndex(col);
-                if (ci >= 0) return nA + ci;
-            }
+            if (tbl == tnA) { int ci = tA->schema.colIndex(col); if (ci>=0) return ci; }
+            else if (tbl == tnB){ int ci = tB->schema.colIndex(col); if (ci>=0) return nA+ci; }
             return -1;
         }
-        // Unqualified: search A then B
         int ci = tA->schema.colIndex(rawCol);
-        if (ci >= 0) return ci;
+        if (ci>=0) return ci;
         ci = tB->schema.colIndex(rawCol);
-        if (ci >= 0) return nA + ci;
+        if (ci>=0) return nA+ci;
         return -1;
     };
 
     if (selectAll) {
-        for (int i = 0; i < nA; ++i) {
-            colIdxs.push_back(i);
-            outColNames.push_back(tnA + "." + tA->schema.columns[i].name);
-        }
-        for (int i = 0; i < nB; ++i) {
-            colIdxs.push_back(nA + i);
-            outColNames.push_back(tnB + "." + tB->schema.columns[i].name);
-        }
+        for(int i=0;i<nA;++i){colIdxs.push_back(i);outColNames.push_back(tnA+"."+tA->schema.columns[i].name);}
+        for(int i=0;i<nB;++i){colIdxs.push_back(nA+i);outColNames.push_back(tnB+"."+tB->schema.columns[i].name);}
     } else {
-        for (const auto &rawCol : selectColsIn) {
-            int idx = resolveCol(toUpper(rawCol));
-            if (idx < 0) { err = "No column: " + rawCol; return false; }
-            colIdxs.push_back(idx);
-            outColNames.push_back(rawCol);
+        for(const auto &c:selectColsIn){
+            int idx = resolveCol(toUpper(c));
+            if(idx<0){err="No column: "+c; return false;}
+            colIdxs.push_back(idx); outColNames.push_back(c);
         }
     }
-    out.columns = outColNames;
+    out.columns=outColNames;
 
-    // WHERE: resolve which table the column belongs to
-    int wciA = -1, wciB = -1;
-    if (wherePresent) {
+    int wciA=-1,wciB=-1;
+    if(wherePresent){
         std::string wc = toUpper(whereCol);
-        auto dot = wc.find('.');
-        if (dot != std::string::npos) {
-            std::string tbl = wc.substr(0, dot);
-            std::string col = wc.substr(dot + 1);
-            if (tbl == tnA) wciA = tA->schema.colIndex(col);
-            else if (tbl == tnB) wciB = tB->schema.colIndex(col);
-        } else {
-            wciA = tA->schema.colIndex(wc);
-            if (wciA < 0) wciB = tB->schema.colIndex(wc);
+        auto dot=wc.find('.');
+        if(dot!=std::string::npos){
+            std::string tbl=wc.substr(0,dot);
+            std::string col=wc.substr(dot+1);
+            if(tbl==tnA) wciA=tA->schema.colIndex(col);
+            else if(tbl==tnB) wciB=tB->schema.colIndex(col);
+        } else{
+            wciA=tA->schema.colIndex(wc);
+            if(wciA<0) wciB=tB->schema.colIndex(wc);
         }
     }
 
-    int ciA = tA->schema.colIndex(toUpper(colA));
-    int ciB = tB->schema.colIndex(toUpper(colB));
+    int ciA=tA->schema.colIndex(toUpper(colA));
+    int ciB=tB->schema.colIndex(toUpper(colB));
 
-    for (const auto &rowA : tA->rows) {
-        for (const auto &rowB : tB->rows) {
+    for(const auto &rowA:tA->rows){
+        for(const auto &rowB:tB->rows){
+            if(ciA>=0 && ciB>=0 && valueToString(rowA.cells[ciA])!=valueToString(rowB.cells[ciB])) continue;
 
-            // JOIN condition
-            if (ciA >= 0 && ciB >= 0) {
-                if (valueToString(rowA.cells[ciA]) != valueToString(rowB.cells[ciB]))
-                    continue;
-            }
-
-            // WHERE condition
-            if (wherePresent) {
+            if(wherePresent){
                 std::string wc = toUpper(whereCol);
                 auto dot = wc.find('.');
-                std::string bareCol = (dot != std::string::npos) ? wc.substr(dot + 1) : wc;
-
-                bool match = false;
-                if (wciA >= 0)
-                    match = rowMatchesWhere(rowA, tA->schema, bareCol, whereOp, whereVal);
-                else if (wciB >= 0)
-                    match = rowMatchesWhere(rowB, tB->schema, bareCol, whereOp, whereVal);
-
-                if (!match) continue;
+                std::string bareCol = (dot!=std::string::npos)?wc.substr(dot+1):wc;
+                bool match=false;
+                if(wciA>=0) match=rowMatchesWhere(rowA,tA->schema,bareCol,whereOp,whereVal);
+                else if(wciB>=0) match=rowMatchesWhere(rowB,tB->schema,bareCol,whereOp,whereVal);
+                if(!match) continue;
             }
 
-            // Build output row using resolved column indices
             Row outRow;
-            for (int idx : colIdxs) {
-                if (idx < nA)
-                    outRow.cells.push_back(rowA.cells[idx]);
-                else
-                    outRow.cells.push_back(rowB.cells[idx - nA]);
+            for(int idx:colIdxs){
+                if(idx<nA) outRow.cells.push_back(rowA.cells[idx]);
+                else outRow.cells.push_back(rowB.cells[idx-nA]);
             }
             out.rows.push_back(outRow);
         }
