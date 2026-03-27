@@ -7,9 +7,12 @@ SRCDIR   = src
 BINDIR   = .
 
 # ── Source Files ────────────────────────────────────────
-SERVER_SRC = $(SRCDIR)/server/server.cpp \
-             $(SRCDIR)/parser/parser.cpp \
-             $(SRCDIR)/storage/storage.cpp
+SERVER_SRC = \
+    src/server/server.cpp \
+    src/parser/parser.cpp \
+    src/storage/storage.cpp \
+    src/core/query_executor.cpp \
+    src/cache/cache.cpp
 
 API_SRC = $(SRCDIR)/api/flexql_api.cpp
 
