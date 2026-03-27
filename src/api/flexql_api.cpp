@@ -18,38 +18,38 @@ struct FlexQL {
 
 /* ── flexql_open ─────────────────────────────────────────── */
 int flexql_open(const char *host, int port, FlexQL **outDb) {
-    if (!host || !outDb) return FLEXQL_ERROR;
+    if (!host || !outDb) return 1;
 
     int sock = socket(AF_INET, SOCK_STREAM, 0);
-    if (sock < 0) return FLEXQL_ERROR;
+    if (sock < 0) return 1;
 
     sockaddr_in addr{};
     addr.sin_family = AF_INET;
     addr.sin_port   = htons((uint16_t)port);
     if (inet_pton(AF_INET, host, &addr.sin_addr) <= 0) {
-        close(sock); return FLEXQL_ERROR;
+        close(sock); return 1;
     }
 
     if (connect(sock, (sockaddr *)&addr, sizeof(addr)) < 0) {
-        close(sock); return FLEXQL_ERROR;
+        close(sock); return 1;
     }
 
     FlexQL *db = (FlexQL *)malloc(sizeof(FlexQL));
-    if (!db) { close(sock); return FLEXQL_ERROR; }
+    if (!db) { close(sock); return 1; }
     db->sock = sock;
     *outDb = db;
-    return FLEXQL_OK;
+    return 0;
 }
 
 /* ── flexql_close ────────────────────────────────────────── */
 int flexql_close(FlexQL *db) {
-    if (!db) return FLEXQL_ERROR;
+    if (!db) return 1;
     if (db->sock >= 0) {
         close(db->sock);
         db->sock = -1;
     }
     free(db);
-    return FLEXQL_OK;
+    return 0;
 }
 
 /* ── flexql_exec ─────────────────────────────────────────── */
@@ -61,81 +61,66 @@ int flexql_exec(FlexQL *db,
 
     if (!db || db->sock < 0 || !sql) {
         if (errmsg) *errmsg = strdup("Invalid database handle");
-        return FLEXQL_ERROR;
+        return 1;
     }
 
     std::string query = sql;
     if (!query.empty() && query.back() != ';') query += ";";
+    query += "\n";
 
     // Send query to server
     if (send(db->sock, query.c_str(), query.length(), 0) <= 0) {
         if (errmsg) *errmsg = strdup("Failed to send query to server");
-        return FLEXQL_ERROR;
+        return 1;
     }
 
-    // Read the first line to check for error
-    std::string firstLine;
-    char c;
-    while (read(db->sock, &c, 1) > 0) {
-        if (c == '\n') break;
-        firstLine += c;
-    }
+    // Read full response
+    std::string response;
+    char buf[4096];
+    bool done = false;
     
-    std::cerr << "API: First line: [" << firstLine << "]" << std::endl;
-    
-    // If first line starts with ERROR|, return error
-    if (firstLine.find("ERROR|") == 0) {
-        std::cerr << "API: DETECTED ERROR!" << std::endl;
-        
-        // Extract error message
-        if (errmsg) {
-            std::string errorMsg = firstLine.substr(6);
-            *errmsg = strdup(errorMsg.c_str());
-            std::cerr << "API: Error message: " << errorMsg << std::endl;
-        }
-        
-        // Read the rest of the response until END to clear the socket buffer
-        std::string rest;
-        char buf[1024];
-        while (true) {
-            ssize_t n = read(db->sock, buf, sizeof(buf) - 1);
-            if (n <= 0) break;
-            buf[n] = '\0';
-            rest += buf;
-            if (rest.find("END") != std::string::npos) break;
-        }
-        
-        std::cerr << "API: Returning FLEXQL_ERROR (1)" << std::endl;
-        return FLEXQL_ERROR;
-    }
-    
-    std::cerr << "API: No error detected, processing normal response" << std::endl;
-    
-    // If no error, continue reading the full response
-    std::string fullResponse = firstLine + "\n";
-    char buf[8192];
-    while (true) {
-        ssize_t n = read(db->sock, buf, sizeof(buf) - 1);
+    while (!done) {
+        ssize_t n = recv(db->sock, buf, sizeof(buf) - 1, 0);
         if (n <= 0) break;
         buf[n] = '\0';
-        fullResponse += buf;
-        if (fullResponse.find("\nEND\n") != std::string::npos) break;
+        response += buf;
+        if (response.find("\nEND\n") != std::string::npos) {
+            done = true;
+        }
     }
     
-    // Parse the successful response
+    // DEBUG: Print the response
+    std::cerr << "API: Response received: " << response << std::endl;
+    
+    // Check for error response
+    if (response.find("ERROR|") != std::string::npos) {
+        // Extract error message
+        size_t start = response.find("ERROR|") + 6;
+        size_t end = response.find("\n", start);
+        if (end != std::string::npos && errmsg) {
+            std::string errorMsg = response.substr(start, end - start);
+            *errmsg = strdup(errorMsg.c_str());
+        }
+        std::cerr << "API: Returning ERROR (1)" << std::endl;
+        return 1; // Error
+    }
+    
+    std::cerr << "API: Returning SUCCESS (0)" << std::endl;
+    
+    // Parse successful response
     std::vector<std::string> lines;
-    std::stringstream ss(fullResponse);
+    std::stringstream ss(response);
     std::string line;
     while (std::getline(ss, line)) {
         if (line == "END") break;
         lines.push_back(line);
     }
     
-    if (lines.empty()) {
-        return FLEXQL_OK;
+    if (lines.empty() || !callback) {
+        return 0; // Success
     }
     
-    // Parse column headers (first line)
+    // Parse headers
     std::vector<std::string> headers;
     std::stringstream headerStream(lines[0]);
     std::string header;
@@ -143,36 +128,30 @@ int flexql_exec(FlexQL *db,
         headers.push_back(header);
     }
     
-    // Parse data rows (remaining lines)
-    std::vector<std::vector<std::string>> rows;
+    // Process each row
     for (size_t i = 1; i < lines.size(); i++) {
-        std::vector<std::string> row;
+        std::vector<std::string> values;
         std::stringstream rowStream(lines[i]);
         std::string value;
         while (rowStream >> value) {
-            row.push_back(value);
+            values.push_back(value);
         }
-        rows.push_back(row);
+        
+        std::vector<char*> argv;
+        std::vector<char*> colNames;
+        
+        for (auto& v : values) {
+            argv.push_back(const_cast<char*>(v.c_str()));
+        }
+        for (auto& h : headers) {
+            colNames.push_back(const_cast<char*>(h.c_str()));
+        }
+        
+        int rc = callback(arg, (int)argv.size(), argv.data(), colNames.data());
+        if (rc != 0) break;
     }
     
-    // Call callback for each row if provided
-    if (callback) {
-        for (const auto& row : rows) {
-            std::vector<char*> argv;
-            for (const auto& val : row) {
-                argv.push_back(const_cast<char*>(val.c_str()));
-            }
-            
-            std::vector<char*> colNames;
-            for (const auto& h : headers) {
-                colNames.push_back(const_cast<char*>(h.c_str()));
-            }
-            
-            callback(arg, (int)argv.size(), argv.data(), colNames.data());
-        }
-    }
-    
-    return FLEXQL_OK;
+    return 0; // Success
 }
 
 /* ── flexql_free ─────────────────────────────────────────── */
