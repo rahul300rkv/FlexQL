@@ -33,11 +33,10 @@ server:
 client:
 	$(CXX) $(CXXFLAGS) -o $(BINDIR)/client $(CLIENT_SRC) $(API_SRC) $(LDFLAGS)
 
-# ── BENCHMARK (CRITICAL) ────────────────────────────────
 benchmark:
-	$(CXX) $(CXXFLAGS) -o $(BINDIR)/benchmark \
-	$(BENCHMARK_SRC) $(API_SRC) $(LDFLAGS)
+	$(CXX) $(CXXFLAGS) -o benchmark/benchmark_exe \
+	benchmark/benchmark_flexql.cpp src/api/flexql_api.cpp
 
-# ── CLEAN ───────────────────────────────────────────────
 clean:
-	rm -f server client benchmark
+	rm -f server client
+	rm -f benchmark/benchmark_exe
