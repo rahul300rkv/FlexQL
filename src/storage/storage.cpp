@@ -230,13 +230,13 @@ bool StorageEngine::selectRows(const std::string &tableName,
     return true;
 }
 
-/* ── JOIN (CROSS JOIN) ─────────────────────────────────── */
+/* ── JOIN (INNER JOIN) ─────────────────────────────────── */
 bool StorageEngine::selectJoin(const std::string &tableA,
                                 const std::string &tableB,
                                 const std::string &colA,
                                 const std::string &colB,
-                                const std::vector<std::string> &,
-                                bool,
+                                const std::vector<std::string> &selectColsIn,
+                                bool selectAll,
                                 const std::string &whereCol,
                                 const std::string &whereOp,
                                 const std::string &whereVal,
@@ -262,11 +262,73 @@ bool StorageEngine::selectJoin(const std::string &tableA,
     purgeExpiredRows(*tA);
     purgeExpiredRows(*tB);
 
-    for (auto &c : tA->schema.columns)
-        out.columns.push_back(tnA + "." + toUpper(c.name));
+    // Build the combined schema: tableA cols then tableB cols
+    // Each column is addressed as "TABLE.COL" or just "COL"
+    int nA = (int)tA->schema.columns.size();
+    int nB = (int)tB->schema.columns.size();
 
-    for (auto &c : tB->schema.columns)
-        out.columns.push_back(tnB + "." + toUpper(c.name));
+    // Resolve which combined columns to output
+    // colIdxs[i] = index in the combined row (0..nA-1 = tableA, nA..nA+nB-1 = tableB)
+    std::vector<int> colIdxs;
+    std::vector<std::string> outColNames;
+
+    auto resolveCol = [&](const std::string &rawCol) -> int {
+        // Try qualified TABLE.COL match first
+        auto dot = rawCol.find('.');
+        if (dot != std::string::npos) {
+            std::string tbl = rawCol.substr(0, dot);
+            std::string col = rawCol.substr(dot + 1);
+            if (tbl == tnA) {
+                int ci = tA->schema.colIndex(col);
+                if (ci >= 0) return ci;
+            } else if (tbl == tnB) {
+                int ci = tB->schema.colIndex(col);
+                if (ci >= 0) return nA + ci;
+            }
+            return -1;
+        }
+        // Unqualified: search A then B
+        int ci = tA->schema.colIndex(rawCol);
+        if (ci >= 0) return ci;
+        ci = tB->schema.colIndex(rawCol);
+        if (ci >= 0) return nA + ci;
+        return -1;
+    };
+
+    if (selectAll) {
+        for (int i = 0; i < nA; ++i) {
+            colIdxs.push_back(i);
+            outColNames.push_back(tnA + "." + tA->schema.columns[i].name);
+        }
+        for (int i = 0; i < nB; ++i) {
+            colIdxs.push_back(nA + i);
+            outColNames.push_back(tnB + "." + tB->schema.columns[i].name);
+        }
+    } else {
+        for (const auto &rawCol : selectColsIn) {
+            int idx = resolveCol(toUpper(rawCol));
+            if (idx < 0) { err = "No column: " + rawCol; return false; }
+            colIdxs.push_back(idx);
+            outColNames.push_back(rawCol);
+        }
+    }
+    out.columns = outColNames;
+
+    // WHERE: resolve which table the column belongs to
+    int wciA = -1, wciB = -1;
+    if (wherePresent) {
+        std::string wc = toUpper(whereCol);
+        auto dot = wc.find('.');
+        if (dot != std::string::npos) {
+            std::string tbl = wc.substr(0, dot);
+            std::string col = wc.substr(dot + 1);
+            if (tbl == tnA) wciA = tA->schema.colIndex(col);
+            else if (tbl == tnB) wciB = tB->schema.colIndex(col);
+        } else {
+            wciA = tA->schema.colIndex(wc);
+            if (wciA < 0) wciB = tB->schema.colIndex(wc);
+        }
+    }
 
     int ciA = tA->schema.colIndex(toUpper(colA));
     int ciB = tB->schema.colIndex(toUpper(colB));
@@ -274,31 +336,36 @@ bool StorageEngine::selectJoin(const std::string &tableA,
     for (const auto &rowA : tA->rows) {
         for (const auto &rowB : tB->rows) {
 
+            // JOIN condition
             if (ciA >= 0 && ciB >= 0) {
                 if (valueToString(rowA.cells[ciA]) != valueToString(rowB.cells[ciB]))
                     continue;
             }
 
+            // WHERE condition
             if (wherePresent) {
-                bool match = false;
                 std::string wc = toUpper(whereCol);
+                auto dot = wc.find('.');
+                std::string bareCol = (dot != std::string::npos) ? wc.substr(dot + 1) : wc;
 
-                int wciA = tA->schema.colIndex(wc);
-                int wciB = tB->schema.colIndex(wc);
-
+                bool match = false;
                 if (wciA >= 0)
-                    match = rowMatchesWhere(rowA, tA->schema, wc, whereOp, whereVal);
+                    match = rowMatchesWhere(rowA, tA->schema, bareCol, whereOp, whereVal);
                 else if (wciB >= 0)
-                    match = rowMatchesWhere(rowB, tB->schema, wc, whereOp, whereVal);
+                    match = rowMatchesWhere(rowB, tB->schema, bareCol, whereOp, whereVal);
 
                 if (!match) continue;
             }
 
-            Row combined;
-            for (auto &v : rowA.cells) combined.cells.push_back(v);
-            for (auto &v : rowB.cells) combined.cells.push_back(v);
-
-            out.rows.push_back(combined);
+            // Build output row using resolved column indices
+            Row outRow;
+            for (int idx : colIdxs) {
+                if (idx < nA)
+                    outRow.cells.push_back(rowA.cells[idx]);
+                else
+                    outRow.cells.push_back(rowB.cells[idx - nA]);
+            }
+            out.rows.push_back(outRow);
         }
     }
 

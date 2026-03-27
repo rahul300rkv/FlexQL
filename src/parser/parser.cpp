@@ -28,15 +28,13 @@ std::vector<std::string> Parser::tokenize(const std::string &sql) {
         if (sql[i] == '(') { tokens.push_back("("); ++i; continue; }
         if (sql[i] == ')') { tokens.push_back(")"); ++i; continue; }
         if (sql[i] == '\'') {
-            // quoted string
             ++i;
             std::string s;
             while (i < n && sql[i] != '\'') s += sql[i++];
-            if (i < n) ++i; // consume closing '
+            if (i < n) ++i;
             tokens.push_back(s);
             continue;
         }
-        // regular token
         std::string tok;
         while (i < n && !std::isspace((unsigned char)sql[i])
                && sql[i] != ',' && sql[i] != ';'
@@ -65,7 +63,6 @@ WhereClause Parser::parseWhere(const std::vector<std::string> &tokens, size_t &p
 ParsedQuery Parser::parse(const std::string &rawSql) {
     ParsedQuery q;
     std::string sql = trim(rawSql);
-    // Remove trailing semicolon
     if (!sql.empty() && sql.back() == ';') sql.pop_back();
 
     auto tokens = tokenize(sql);
@@ -79,44 +76,39 @@ ParsedQuery Parser::parse(const std::string &rawSql) {
             q.errorMsg = "Expected CREATE TABLE"; return q;
         }
         q.type = QueryType::CREATE_TABLE;
-
         size_t pos = 2;
+
         if (pos + 2 < tokens.size() && toUpper(tokens[pos]) == "IF" &&
             toUpper(tokens[pos+1]) == "NOT" && toUpper(tokens[pos+2]) == "EXISTS") {
             q.ifNotExists = true;
             pos += 3;
         }
 
-        if (pos >= tokens.size()) {
-            q.errorMsg = "Expected table name"; return q;
-        }
-
+        if (pos >= tokens.size()) { q.errorMsg = "Expected table name"; return q; }
         q.tableName = toUpper(tokens[pos++]);
 
-        // find '(' ... ')'
-        if (pos >= tokens.size() || tokens[pos] != "(") {
-            q.errorMsg = "Expected '(' after table name"; return q;
-        }
+        if (pos >= tokens.size() || tokens[pos] != "(") { q.errorMsg = "Expected '(' after table name"; return q; }
         ++pos;
-        // parse column definitions until ')'
+
         while (pos < tokens.size() && tokens[pos] != ")") {
-            // skip comma separators between col defs
             if (tokens[pos] == ",") { ++pos; continue; }
             ColDef col;
             col.name = toUpper(tokens[pos++]);
             if (pos >= tokens.size()) { q.errorMsg = "Expected column type"; return q; }
             col.type = parseColType(toUpper(tokens[pos++]));
-            // optional modifiers: PRIMARY, KEY, NOT, NULL — stop at comma or ')'
+            if (pos < tokens.size() && tokens[pos] == "(") {
+                ++pos;
+                while (pos < tokens.size() && tokens[pos] != ")") ++pos;
+                if (pos < tokens.size()) ++pos;
+            }
             while (pos < tokens.size() && tokens[pos] != ")" && tokens[pos] != ",") {
                 std::string mod = toUpper(tokens[pos]);
                 if (mod == "PRIMARY") col.primaryKey = true;
                 else if (mod == "NOT") col.notNull = true;
-                // skip KEY, NULL, and other modifiers
                 ++pos;
             }
             q.colDefs.push_back(col);
         }
-        // set pkIndex in schema
         return q;
     }
 
@@ -128,31 +120,33 @@ ParsedQuery Parser::parse(const std::string &rawSql) {
         q.type      = QueryType::INSERT;
         q.tableName = toUpper(tokens[2]);
 
-        // tokens[3] should be VALUES
         size_t pos = 3;
         if (pos >= tokens.size() || toUpper(tokens[pos]) != "VALUES") {
             q.errorMsg = "Expected VALUES"; return q;
         }
         ++pos;
-        // expect '('
-        if (pos >= tokens.size() || tokens[pos] != "(") {
-            q.errorMsg = "Expected '(' after VALUES"; return q;
-        }
-        ++pos;
-        while (pos < tokens.size() && tokens[pos] != ")") {
+
+        while (pos < tokens.size()) {
             if (tokens[pos] == ",") { ++pos; continue; }
-            q.insertValues.push_back(tokens[pos++]);
-        }
-        // Check for EXPIRES timestamp as last value (convention: last value starts with "EXP:")
-        // Format: INSERT INTO t VALUES (v1,v2,...,EXP:unix_timestamp)
-        if (!q.insertValues.empty()) {
-            std::string &last = q.insertValues.back();
-            if (last.rfind("EXP:", 0) == 0) {
-                try { q.expiresAt = (time_t)std::stoll(last.substr(4)); }
-                catch (...) { q.expiresAt = 0; }
-                q.insertValues.pop_back();
+            if (tokens[pos] != "(") break;
+            ++pos;
+
+            std::vector<std::string> row;
+            while (pos < tokens.size() && tokens[pos] != ")") {
+                if (tokens[pos] == ",") { ++pos; continue; }
+                row.push_back(tokens[pos++]);
             }
+            if (pos < tokens.size()) ++pos;
+
+            if (!row.empty() && row.back().rfind("EXP:", 0) == 0) {
+                try { q.expiresAt = (time_t)std::stoll(row.back().substr(4)); }
+                catch (...) { q.expiresAt = 0; }
+                row.pop_back();
+            }
+            q.batchValues.push_back(row);
         }
+        if (q.batchValues.empty()) { q.errorMsg = "No values provided"; return q; }
+        q.insertValues = q.batchValues[0];
         return q;
     }
 
@@ -160,45 +154,34 @@ ParsedQuery Parser::parse(const std::string &rawSql) {
     if (first == "SELECT") {
         q.type = QueryType::SELECT;
         size_t pos = 1;
-
-        // collect columns until FROM
-        if (pos < tokens.size() && tokens[pos] == "*") {
-            q.selectAll = true; ++pos;
-        } else {
+        if (pos < tokens.size() && tokens[pos] == "*") { q.selectAll = true; ++pos; }
+        else {
             while (pos < tokens.size() && toUpper(tokens[pos]) != "FROM") {
                 if (tokens[pos] != ",") q.selectCols.push_back(toUpper(tokens[pos]));
                 ++pos;
             }
         }
 
-        // FROM
-        if (pos >= tokens.size() || toUpper(tokens[pos]) != "FROM") {
-            q.errorMsg = "Expected FROM"; return q;
-        }
+        if (pos >= tokens.size() || toUpper(tokens[pos]) != "FROM") { q.errorMsg = "Expected FROM"; return q; }
         ++pos;
         if (pos >= tokens.size()) { q.errorMsg = "Expected table name"; return q; }
         q.tableName = toUpper(tokens[pos++]);
 
-        // INNER JOIN?
+        // JOIN
         if (pos < tokens.size() && toUpper(tokens[pos]) == "INNER") {
-            ++pos; // skip INNER
-            if (pos >= tokens.size() || toUpper(tokens[pos]) != "JOIN") {
-                q.errorMsg = "Expected JOIN"; return q;
-            }
+            ++pos;
+            if (pos >= tokens.size() || toUpper(tokens[pos]) != "JOIN") { q.errorMsg = "Expected JOIN"; return q; }
             ++pos;
             if (pos >= tokens.size()) { q.errorMsg = "Expected join table"; return q; }
             q.joinTable = toUpper(tokens[pos++]);
             q.hasJoin   = true;
 
-            // ON tableA.col = tableB.col
             if (pos < tokens.size() && toUpper(tokens[pos]) == "ON") {
                 ++pos;
                 if (pos + 2 < tokens.size()) {
-                    // tokens[pos] = tableA.col
                     std::string lhs = tokens[pos++];
-                    ++pos; // skip '='
+                    ++pos;
                     std::string rhs = tokens[pos++];
-                    // strip table prefix
                     auto dot1 = lhs.find('.');
                     auto dot2 = rhs.find('.');
                     q.joinColA = toUpper(dot1 != std::string::npos ? lhs.substr(dot1+1) : lhs);
@@ -209,11 +192,15 @@ ParsedQuery Parser::parse(const std::string &rawSql) {
 
         // WHERE
         q.where = parseWhere(tokens, pos);
-
-        // Uppercase where column/value if needed
         if (q.where.present) {
             q.where.column = toUpper(q.where.column);
+            auto dot = q.where.column.find('.');
+            if (dot != std::string::npos) q.where.column = q.where.column.substr(dot+1);
         }
+
+        // ORDER BY is **removed** completely
+        // q.orderByCol = "";
+        // q.orderByDesc = false
 
         return q;
     }
@@ -221,9 +208,7 @@ ParsedQuery Parser::parse(const std::string &rawSql) {
     /* ── DELETE ───────────────────────────────────────────── */
     if (first == "DELETE") {
         q.type = QueryType::DELETE;
-        if (tokens.size() < 3 || toUpper(tokens[1]) != "FROM") {
-            q.errorMsg = "Expected DELETE FROM"; return q;
-        }
+        if (tokens.size() < 3 || toUpper(tokens[1]) != "FROM") { q.errorMsg = "Expected DELETE FROM"; return q; }
         q.tableName = toUpper(tokens[2]);
         return q;
     }

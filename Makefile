@@ -2,40 +2,33 @@ CXX      = g++
 CXXFLAGS = -std=c++17 -O2 -Wall -Wextra -Iinclude
 LDFLAGS  =
 
-# ── Directories ─────────────────────────────────────────
-SRCDIR   = src
-BINDIR   = .
+# ── Source files ─────────────────────────────────────────────
+SERVER_SRC = src/server/server.cpp \
+             src/parser/parser.cpp \
+             src/storage/storage.cpp
 
-# ── Source Files ────────────────────────────────────────
-SERVER_SRC = $(SRCDIR)/server/server.cpp \
-             $(SRCDIR)/parser/parser.cpp \
-             $(SRCDIR)/storage/storage.cpp
+API_SRC    = src/api/flexql_api.cpp
 
-API_SRC = $(SRCDIR)/api/flexql_api.cpp
+CLIENT_SRC = src/client/repl.cpp \
+             $(API_SRC)
 
-CLIENT_SRC = $(SRCDIR)/client/repl.cpp
+BENCH_SRC  = benchmark/benchmark_flexql.cpp \
+             $(API_SRC)
 
-BENCHMARK_SRC = benchmark/benchmark_flexql.cpp
+# ── Targets ───────────────────────────────────────────────────
+.PHONY: all server client benchmark clean
 
-# ── Targets ─────────────────────────────────────────────
-.PHONY: all clean bench
+all: server client benchmark
 
-all: server client bench
-
-# ── SERVER (required by benchmark) ───────────────────────
 server:
-	$(CXX) $(CXXFLAGS) -o $(BINDIR)/server $(SERVER_SRC) $(LDFLAGS)
+	$(CXX) $(CXXFLAGS) -o server $(SERVER_SRC) $(LDFLAGS)
 
-# ── CLIENT (optional REPL) ───────────────────────────────
 client:
-	$(CXX) $(CXXFLAGS) -o $(BINDIR)/client $(CLIENT_SRC) $(API_SRC) $(LDFLAGS)
+	$(CXX) $(CXXFLAGS) -o client $(CLIENT_SRC) $(LDFLAGS)
 
-# ── BENCHMARK (CRITICAL) ────────────────────────────────
-bench:
-	$(CXX) $(CXXFLAGS) -o benchmark/benchmark \
-	benchmark/benchmark_flexql.cpp src/api/flexql_api.cpp
+benchmark:
+	$(CXX) $(CXXFLAGS) -Ibenchmark -o benchmark/benchmark \
+	    $(BENCH_SRC) $(LDFLAGS)
 
-# ── CLEAN ───────────────────────────────────────────────
 clean:
-	rm -f server client
-	rm -f benchmark/benchmark
+	rm -f server client benchmark/benchmark

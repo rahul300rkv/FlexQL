@@ -29,14 +29,19 @@ struct ParsedQuery {
     std::string         tableName;
     std::vector<ColDef> colDefs;
 
-    // INSERT
-    std::vector<std::string> insertValues;
+    // INSERT — supports batch: each inner vector is one row of values
+    std::vector<std::vector<std::string>> batchValues;
+    std::vector<std::string> insertValues; // kept for single-row compat
     time_t                   expiresAt = 0;   // 0 = never
 
     // SELECT
     bool                     selectAll  = false;
     std::vector<std::string> selectCols;
     WhereClause              where;
+
+    // ORDER BY
+    std::string orderByCol;
+    bool        orderByDesc = false;
 
     // JOIN
     bool        hasJoin   = false;
