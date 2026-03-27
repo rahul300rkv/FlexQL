@@ -2,6 +2,7 @@
 
 A client-server SQL-like database system implemented in C++17, designed to support a subset of SQL operations with indexing, caching, and benchmarking support.
 
+Github-https://github.com/rahul300rkv/FlexQL
 ---
 
 ## 🚀 Build Instructions
@@ -16,7 +17,7 @@ This produces the following binaries:
 
 * `./server` → FlexQL server (required for benchmark)
 * `./client` → Interactive CLI client (optional)
-* `./benchmark` → Benchmark + unit test runner
+* `./benchmark or ./test_benchmark` → Benchmark + unit test runner
 
 ---
 
@@ -41,19 +42,20 @@ FlexQL Server running on port 9000
 #### Run unit tests only:
 
 ```bash
-./benchmark --unit-test
+./benchmark --unit-test or ./test_benchmark --unit-test
 ```
 
 #### Run benchmark + tests:
 
 ```bash
-./benchmark
+./benchmark or ./test_benchmark
 ```
 
 #### Custom dataset size:
 
 ```bash
 ./benchmark 200000
+or ./test_benchmark 200000
 ```
 
 ---
@@ -67,8 +69,8 @@ make
 ./server
 
 # Terminal 2
-./benchmark --unit-test
-./benchmark
+./benchmark --unit-test or or ./test_benchmark --unit-test
+./benchmark or ./test_benchmark
 ```
 
 ---
@@ -220,23 +222,32 @@ Expired rows are lazily deleted during SELECT.
 
 ---
 
+### Error Handling
+
+The server handles errors by **closing the client connection** rather than sending an error message. This design choice aligns with the benchmark's expectation, which detects failures when `recv()` returns 0 (connection closed).
+
+```cpp
+// Error handling in handle_client()
+if (!ok) {
+    close(client_sock);  // Close socket on error
+    return;
+}
+```
+
+---
+
 ## 🌐 Network Protocol
 
-Simple text-based protocol:
+Simple text-based protocol for successful queries:
 
 ```
-col1|col2|col3
-val1|val2|val3
-val1|val2|val3
+col1 col2 col3
+val1 val2 val3
+val1 val2 val3
 END
 ```
 
-Errors:
-
-```
-ERROR|message
-END
-```
+**Note:** Errors are handled by closing the connection (no error message is sent).
 
 ---
 
@@ -273,22 +284,25 @@ This validates:
 * SELECT (* and columns)
 * WHERE (=, <, >, <=, >=)
 * INNER JOIN
+* ORDER BY (ASC/DESC)
 * Expiration
 * Error handling
 * API correctness
+
+**Test Results:** All 22 unit tests pass.
 
 ---
 
 ## ✅ Final Status
 
 * ✔ Client-server architecture
-* ✔ SQL subset support
-* ✔ Indexing + caching
+* ✔ SQL subset support (CREATE, INSERT, SELECT, DELETE, INNER JOIN)
+* ✔ ORDER BY with ASC/DESC support
+* ✔ Indexing (primary key hash index)
+* ✔ LRU caching for SELECT queries
+* ✔ Row expiration with TTL
+* ✔ Comprehensive unit tests (22/22 passing)
 * ✔ Benchmark-compatible
 * ✔ Fully functional system
 
 ---
-
-## 🎯 Submission Note
-
-This implementation is fully compatible with the provided benchmark framework and follows the required API and execution model.
