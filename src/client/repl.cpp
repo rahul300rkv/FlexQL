@@ -11,7 +11,7 @@
 
 static int printRow(void *, int argc, char **argv, char **colNames) {
     for (int i = 0; i < argc; ++i) {
-        if (i) printf(" | ");
+        if (i) printf("  ");
         printf("%s=%s", colNames ? colNames[i] : "?", argv[i] ? argv[i] : "NULL");
     }
     printf("\n");

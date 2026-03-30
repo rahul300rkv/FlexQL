@@ -269,7 +269,7 @@ std::string StorageEngine::makeCacheKey(const std::string &tname,
     oss << tname << ":";
     if (selectAll) oss << "*";
     else for (const auto &c : cols) oss << c << ",";
-    oss << "|";
+    oss << " ";
     if (wherePresent) oss << whereCol << whereOp << whereVal;
     return oss.str();
 }

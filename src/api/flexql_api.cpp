@@ -160,8 +160,14 @@ int flexql_exec(FlexQL *db,
             if (!callback) continue;
 
             std::vector<std::string> vals;
-            for (size_t i = 1; i < fields.size(); ++i)
-                vals.push_back(fields[i]);
+std::string combined;
+
+for (size_t i = 1; i < fields.size(); ++i) {
+    if (i > 1) combined += " ";
+    combined += fields[i];
+}
+
+vals.push_back(combined);
 
             std::vector<char *> argv_ptrs, col_ptrs;
             for (auto &v : vals)     argv_ptrs.push_back(const_cast<char *>(v.c_str()));
