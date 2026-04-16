@@ -10,12 +10,7 @@
 #include <sstream>
 #include <vector>
 
-/*
- * Internal handle.
- * recvBuf persists between flexql_exec calls so that bytes belonging
- * to the next response are never silently discarded when a recv() call
- * returns more data than the current response needs.
- */
+
 struct FlexQL {
     int         sockfd  = -1;
     std::string recvBuf;
@@ -64,16 +59,6 @@ static std::vector<std::string> splitTabs(const std::string &line) {
     return fields;
 }
 
-/*
- * Read exactly one complete response into `response`.
- *
- * A response ends when we see a line whose content is exactly "END"
- * or starts with "ERR\t".  All bytes after that line stay in
- * db->recvBuf for the next call — this is the key fix for the TCP
- * pipeline bug where multiple responses arrive in one recv() chunk.
- *
- * Returns false only when the socket closes before a terminator arrives.
- */
 static bool readResponse(FlexQL *db, std::string &response) {
     response.clear();
     char tmp[4096];
@@ -160,14 +145,8 @@ int flexql_exec(FlexQL *db,
             if (!callback) continue;
 
             std::vector<std::string> vals;
-std::string combined;
-
-for (size_t i = 1; i < fields.size(); ++i) {
-    if (i > 1) combined += " ";
-    combined += fields[i];
-}
-
-vals.push_back(combined);
+            for (size_t i = 1; i < fields.size(); ++i)
+                vals.push_back(fields[i]);
 
             std::vector<char *> argv_ptrs, col_ptrs;
             for (auto &v : vals)     argv_ptrs.push_back(const_cast<char *>(v.c_str()));
@@ -194,7 +173,7 @@ vals.push_back(combined);
     return result;
 }
 
-/* ── flexql_free ─────────────────────────────────────────── */
+
 void flexql_free(void *ptr) {
     free(ptr);
 }
