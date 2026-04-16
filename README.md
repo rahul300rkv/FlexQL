@@ -16,7 +16,7 @@ This produces the following binaries:
 
 * `./server` → FlexQL server (required for benchmark)
 * `./client` → Interactive CLI client (optional)
-* `./benchmark` → Benchmark + unit test runner
+* `./benchmark/benchmark` → Benchmark + unit test runner
 
 ---
 
